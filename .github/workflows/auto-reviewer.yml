@@ -1,4 +1,4 @@
-name: Auto Reviewer by Diff Keyword
+name: Checking for 3rd party Datasharing review
 on:
   pull_request:
     types: [opened, synchronize]
@@ -22,8 +22,10 @@ jobs:
         id: scan
         run: |
           git fetch origin ${{ github.base_ref }}
+          
+          KEYWORDS="THATSCHEMA|BRAZE|AUDITBOARD"
           # Check for the keyword in added lines (+)
-          if git diff origin/${{ github.base_ref }}...HEAD | grep "^\+" | grep -i "THATSCHEMA"; then
+          if git diff origin/${{ github.base_ref }}...HEAD | grep "^\+" | grep -Ei "$KEYWORDS"; then
             echo "match=true" >> $GITHUB_OUTPUT
           else
             echo "match=false" >> $GITHUB_OUTPUT
