@@ -40,5 +40,5 @@ jobs:
               repo: context.repo.repo,
               pull_number: context.issue.number,
               reviewers: ['pangan'],
-              team_reviewers: ['your-team-slug'] 
+              team_reviewers: [] 
             })
