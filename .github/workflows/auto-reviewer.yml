@@ -27,18 +27,20 @@ jobs:
       - name: Scan Diff for Keyword
         id: scan
         run: |
-          # 1. Ensure the base branch is fetched and available locally
-          git fetch origin ${{ github.base_ref }}
+          # 1. Safely get the base branch name for both PR and Review events
+          BASE_BRANCH=${{ github.event.pull_request.base.ref }}
           
-          # 2. Get the specific SHAs for the comparison
-          # If it's a review event, we use the PR head. If it's a PR event, we use HEAD.
-          HEAD_SHA=${{ github.event.pull_request.head.sha || 'HEAD' }}
-          BASE_SHA=origin/${{ github.base_ref }}
-
+          # 2. Fetch the base branch history
+          git fetch origin $BASE_BRANCH
+          
+          # 3. Get the specific SHAs
+          # Use the head SHA from the payload to be precise
+          HEAD_SHA=${{ github.event.pull_request.head.sha }}
+          BASE_SHA=origin/$BASE_BRANCH
+          
           echo "Comparing $BASE_SHA to $HEAD_SHA"
-
-          # 3. Use two dots (..) instead of three (...) for CI stability
-          # This compares the tip of the base branch to the tip of your PR branch
+          
+          # 4. Run the diff
           if git diff $BASE_SHA..$HEAD_SHA | grep "^\+" | grep -Ei "THATSCHEMA|BRAZE|AUDITBOARD"; then
             echo "match=true" >> $GITHUB_OUTPUT
             echo "Keyword found."
