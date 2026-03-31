@@ -5,94 +5,62 @@ on:
   pull_request_review:
     types: [submitted, dismissed]
 
-# This is the key! It cancels old runs and groups everything by PR
-concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
-
 jobs:
-  check-diff:
-    # Use a clear name for Branch Protection
-    name: Mandatory Data Review Gate
+  enforce-review:
+    name: Security Gate
     runs-on: ubuntu-latest
     permissions:
       pull-requests: write
       contents: read
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      checks: write # Required to update the status check manually
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Scan Diff for Keyword
-        id: scan
-        run: |
-          git fetch origin ${{ github.base_ref }}
-          KEYWORDS="THATSCHEMA|BRAZE|AUDITBOARD"
-          
-          if git diff origin/${{ github.base_ref }}...HEAD | grep "^\+" | grep -Ei "$KEYWORDS"; then
-            echo "match=true" >> $GITHUB_OUTPUT
-          else
-            echo "match=false" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Verify Mandatory Reviewers
-        if: always()
+      - name: Scan and Enforce
         uses: actions/github-script@v7
         with:
           script: |
-            const isMatch = "${{ steps.scan.outputs.match }}" === "true";
-            // Handle both PR and Review event payloads
-            const prNumber = context.payload.pull_request ? context.payload.pull_request.number : context.issue.number;
-            const orgName = context.repo.owner;
-            const repoName = context.repo.repo;
+            // 1. Scan for Keywords
+            const { execSync } = require('child_process');
+            execSync('git fetch origin ${ { github.base_ref } }');
+            const diff = execSync('git diff origin/${ { github.base_ref } }...HEAD').toString();
+            const keywords = /THATSCHEMA|BRAZE|AUDITBOARD/i;
+            const addedLines = diff.split('\n').filter(line => line.startsWith('+'));
+            const isMatch = addedLines.some(line => keywords.test(line));
 
-            // --- CONFIGURATION ---
-            const mandatoryUsers = ["pangan"]; 
-            const mandatoryTeams = []; 
-            // ---------------------
+            const prNumber = context.issue.number;
+            const mandatoryUser = "pangan";
 
             if (!isMatch) {
-              console.log("✅ No sensitive keywords found.");
+              console.log("✅ No keywords found. Passing gate.");
               return;
             }
 
-            // 1. Ensure reviewers are requested
+            // 2. Keywords found: Request pangan
             await github.rest.pulls.requestReviewers({
-              owner: orgName,
-              repo: repoName,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
               pull_number: prNumber,
-              reviewers: mandatoryUsers,
-              team_reviewers: mandatoryTeams
+              reviewers: [mandatoryUser]
             });
 
-            // 2. Fetch all reviews
+            // 3. Check for Approval
             const { data: reviews } = await github.rest.pulls.listReviews({
-              owner: orgName,
-              repo: repoName,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
               pull_number: prNumber,
             });
 
-            // Get only the LATEST review state for each user
-            const latestReviews = {};
-            reviews.forEach(r => {
-              latestReviews[r.user.login] = r.state;
-            });
+            const hasApproved = reviews.some(r => r.user.login === mandatoryUser && r.state === 'APPROVED');
 
-            let missingApprovals = [];
-
-            // 3. Verify Users
-            for (const user of mandatoryUsers) {
-              if (latestReviews[user] !== 'APPROVED') {
-                missingApprovals.push(`@${user}`);
-              }
-            }
-
-            // 4. Final Decision
-            if (missingApprovals.length > 0) {
-              core.setFailed(`🛑 Review required from ${missingApprovals.join(', ')} due to data sharing.`);
+            // 4. THE HARD BLOCK
+            // If pangan hasn't approved, we FAIL the action. 
+            // Because this is a "Required Status Check", it blocks the merge button.
+            if (!hasApproved) {
+              core.setFailed(`🛑 STOP: This PR contains data-sharing keywords. It CANNOT be merged until @${mandatoryUser} approves it.`);
             } else {
-              console.log("✅ Mandatory approval present!");
+              console.log(`✅ @${mandatoryUser} has approved. Access granted.`);
             }
