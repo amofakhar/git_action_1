@@ -6,16 +6,15 @@ on:
     types: [submitted]
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
 
 jobs:
   check-diff:
     runs-on: ubuntu-latest
-    # This block was the culprit
     permissions:
-      pull-requests: write # Needed for assigning reviewers
-      contents: read       # REQUIRED for actions/checkout to work
+      pull-requests: write
+      contents: read
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
@@ -28,25 +27,59 @@ jobs:
         id: scan
         run: |
           git fetch origin ${{ github.base_ref }}
-          
           KEYWORDS="THATSCHEMA|BRAZE|AUDITBOARD"
-          # Check for the keyword in added lines (+)
           if git diff origin/${{ github.base_ref }}...HEAD | grep "^\+" | grep -Ei "$KEYWORDS"; then
             echo "match=true" >> $GITHUB_OUTPUT
           else
             echo "match=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: Assign Team
-        if: steps.scan.outputs.match == 'true'
+      - name: Process Mandatory Review
+        if: always()
         uses: actions/github-script@v7
         with:
           script: |
-            // Use context.issue.number or context.payload.pull_request.number
-            github.rest.pulls.requestReviewers({
+            const isMatch = "${{ steps.scan.outputs.match }}" === "true";
+            const prNumber = context.payload.pull_request ? context.payload.pull_request.number : context.issue.number;
+            const mandatoryUsers = ["pangan"]; 
+            const mandatoryTeams = []; // Add your team slugs here if needed
+
+            if (!isMatch) {
+              console.log("No keywords found. Skipping mandatory review logic.");
+              return;
+            }
+
+            // 1. Always ensure reviewers are assigned if keywords match
+            await github.rest.pulls.requestReviewers({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              pull_number: context.issue.number,
-              reviewers: ['pangan'],
-              team_reviewers: [] 
-            })
+              pull_number: prNumber,
+              reviewers: mandatoryUsers,
+              team_reviewers: mandatoryTeams
+            });
+
+            // 2. Only check for approval if this is a review submission or we want to enforce the gate
+            const { data: reviews } = await github.rest.pulls.listReviews({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+            });
+
+            const latestReviews = {};
+            reviews.forEach(r => { latestReviews[r.user.login] = r.state; });
+
+            const allApproved = mandatoryUsers.every(user => latestReviews[user] === 'APPROVED');
+
+            // 3. LOGIC CHANGE: If it's the first run (opened), don't "Fail" yet, just stay "Pending/In Progress"
+            // If it's a review event and it's not approved, THEN fail.
+            if (!allApproved) {
+              if (context.eventName === 'pull_request_review') {
+                core.setFailed("Mandatory review from " + mandatoryUsers.join(', ') + " is still required.");
+              } else {
+                console.log("Keywords found. Waiting for mandatory reviewers to take action...");
+                // Optional: You could use core.warning() so it shows a yellow exclamation instead of a red X
+                core.warning("Review required from: " + mandatoryUsers.join(', '));
+              }
+            } else {
+              console.log("Mandatory approval confirmed!");
+            }

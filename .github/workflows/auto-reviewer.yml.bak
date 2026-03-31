@@ -1,0 +1,52 @@
+name: Checking for 3rd party Datasharing review
+on:
+  pull_request:
+    types: [opened, synchronize]
+  pull_request_review:
+    types: [submitted]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  check-diff:
+    runs-on: ubuntu-latest
+    # This block was the culprit
+    permissions:
+      pull-requests: write # Needed for assigning reviewers
+      contents: read       # REQUIRED for actions/checkout to work
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Scan Diff for Keyword
+        id: scan
+        run: |
+          git fetch origin ${{ github.base_ref }}
+          
+          KEYWORDS="THATSCHEMA|BRAZE|AUDITBOARD"
+          # Check for the keyword in added lines (+)
+          if git diff origin/${{ github.base_ref }}...HEAD | grep "^\+" | grep -Ei "$KEYWORDS"; then
+            echo "match=true" >> $GITHUB_OUTPUT
+          else
+            echo "match=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Assign Team
+        if: steps.scan.outputs.match == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            // Use context.issue.number or context.payload.pull_request.number
+            github.rest.pulls.requestReviewers({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+              reviewers: ['pangan'],
+              team_reviewers: [] 
+            })
