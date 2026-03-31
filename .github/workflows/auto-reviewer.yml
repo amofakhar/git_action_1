@@ -28,13 +28,25 @@ jobs:
       - name: Scan Diff for Keyword
         id: scan
         run: |
-          git fetch origin ${{ github.base_ref }}
-          KEYWORDS="THATSCHEMA|BRAZE|AUDITBOARD"
+          # 1. Fetch the base branch (e.g., main)
+          git fetch origin ${{ github.base_ref }} --depth=1
           
-          if git diff origin/${{ github.base_ref }}...HEAD | grep "^\+" | grep -Ei "$KEYWORDS"; then
+          # 2. Fetch the current PR HEAD
+          git fetch origin ${{ github.event.pull_request.head.sha }} --depth=1
+          
+          # 3. Use the explicit SHAs for the diff to avoid "ambiguous argument" errors
+          BASE_SHA=$(git rev-parse origin/${{ github.base_ref }})
+          HEAD_SHA=${{ github.event.pull_request.head.sha }}
+          
+          echo "Comparing $BASE_SHA to $HEAD_SHA"
+          
+          # Check for keywords in added lines (+)
+          if git diff $BASE_SHA...$HEAD_SHA | grep "^\+" | grep -Ei "THATSCHEMA|BRAZE|AUDITBOARD"; then
             echo "match=true" >> $GITHUB_OUTPUT
+            echo "Keyword match found."
           else
             echo "match=false" >> $GITHUB_OUTPUT
+            echo "No match found."
           fi
 
       - name: Verify Mandatory Reviewers
