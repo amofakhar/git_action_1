@@ -47,7 +47,7 @@ jobs:
 
             // --- CONFIGURATION ---
             const mandatoryUsers = ["pangan"]; 
-            const mandatoryTeams = ["my-team-slug"]; 
+            const mandatoryTeams = []; 
             // ---------------------
 
             if (!isMatch) {
