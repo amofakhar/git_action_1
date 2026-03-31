@@ -40,16 +40,20 @@ jobs:
             const prNumber = context.payload.pull_request.number;
             const orgName = context.repo.owner;
             const repoName = context.repo.repo;
-            
-            const mandatoryUsers = ["pangan"]; 
+
+            // --- CONFIGURATION: ADD YOUR LISTS HERE ---
+            const mandatoryUsers = ["pangan",]; 
             const mandatoryTeams = []; 
-            
+            // ------------------------------------------
+
             if (!isMatch) {
-              console.log("✅ No sensitive keywords found.");
+              console.log("✅ No sensitive keywords found. Extra reviews not mandatory.");
               return;
             }
-            
-            // 1. Always request reviewers if keywords match
+
+            console.log("🔍 Keywords found. Checking for mandatory approvals...");
+
+            // 1. Request Reviewers (ensure they are on the list)
             await github.rest.pulls.requestReviewers({
               owner: orgName,
               repo: repoName,
@@ -57,31 +61,47 @@ jobs:
               reviewers: mandatoryUsers,
               team_reviewers: mandatoryTeams
             });
-            
-            // 2. Fetch reviews
+
+            // 2. Fetch all reviews
             const { data: reviews } = await github.rest.pulls.listReviews({
               owner: orgName,
               repo: repoName,
               pull_number: prNumber,
             });
-            
+
+            // Get only the LATEST review state for each user
             const latestReviews = {};
-            reviews.forEach(r => { latestReviews[r.user.login] = r.state; });
-            
-            let missing = [];
-            mandatoryUsers.forEach(u => { if (latestReviews[u] !== 'APPROVED') missing.push(`@${u}`); });
-            
-            // 3. THE MAGIC LOGIC:
-            // If it's a review event, we FAIL if missing.
-            // If it's just the PR Opening, we DON'T fail, so we don't leave a "Permanent Red X".
-            if (missing.length > 0) {
-              if (context.eventName === 'pull_request_review') {
-                core.setFailed(`🛑 Still waiting for approval from: ${missing.join(', ')}`);
-              } else {
-                // This makes the check "Neutral" (Gray/Yellow) instead of "Failed" (Red) 
-                // on the very first run, so it doesn't look like a permanent error.
-                console.log(`⚠️ Initial scan: Waiting for ${missing.join(', ')} to approve.`);
+            reviews.forEach(r => {
+              latestReviews[r.user.login] = r.state;
+            });
+
+            let missingApprovals = [];
+
+            // 3. Verify Users: Every user in the list must have 'APPROVED'
+            for (const user of mandatoryUsers) {
+              if (latestReviews[user] !== 'APPROVED') {
+                missingApprovals.push(`User: @${user}`);
               }
+            }
+
+            // 4. Verify Teams: At least one person from EACH team must have 'APPROVED'
+            for (const teamSlug of mandatoryTeams) {
+              const { data: members } = await github.rest.teams.listMembersInOrg({
+                org: orgName,
+                team_slug: teamSlug,
+              });
+              
+              const memberLogins = members.map(m => m.login);
+              const teamHasApproved = memberLogins.some(login => latestReviews[login] === 'APPROVED');
+
+              if (!teamHasApproved) {
+                missingApprovals.push(`Team: ${teamSlug} (at least one member)`);
+              }
+            }
+
+            // 5. Final Decision
+            if (missingApprovals.length > 0) {
+              core.setFailed(`🛑 Mandatory approvals missing from: ${missingApprovals.join(', ')}`);
             } else {
-              console.log("✅ All mandatory approvals present!");
+              console.log("✅ All mandatory individual and team approvals are present!");
             }
