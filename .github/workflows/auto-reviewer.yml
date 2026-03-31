@@ -92,7 +92,7 @@ jobs:
 
             // 4. Final Decision
             if (missingApprovals.length > 0) {
-              core.setFailed(`🛑 Review required from ${missingApprovals.join(', ')} due to data keywords.`);
+              core.setFailed(`🛑 Review required from ${missingApprovals.join(', ')} due to data sharing.`);
             } else {
               console.log("✅ Mandatory approval present!");
             }
