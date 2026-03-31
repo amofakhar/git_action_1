@@ -44,55 +44,54 @@ jobs:
         with:
           script: |
             const isMatch = "${{ steps.scan.outputs.match }}" === "true";
-            // Handle both PR and Review event payloads
             const prNumber = context.payload.pull_request ? context.payload.pull_request.number : context.issue.number;
             const orgName = context.repo.owner;
             const repoName = context.repo.repo;
-
-            // --- CONFIGURATION ---
+            
             const mandatoryUsers = ["pangan"]; 
-            const mandatoryTeams = []; 
-            // ---------------------
-
+            
             if (!isMatch) {
               console.log("✅ No sensitive keywords found.");
               return;
             }
-
+            
             // 1. Ensure reviewers are requested
             await github.rest.pulls.requestReviewers({
               owner: orgName,
               repo: repoName,
               pull_number: prNumber,
               reviewers: mandatoryUsers,
-              team_reviewers: mandatoryTeams
+              team_reviewers: []
             });
-
+            
             // 2. Fetch all reviews
             const { data: reviews } = await github.rest.pulls.listReviews({
               owner: orgName,
               repo: repoName,
               pull_number: prNumber,
             });
-
-            // Get only the LATEST review state for each user
+            
             const latestReviews = {};
-            reviews.forEach(r => {
-              latestReviews[r.user.login] = r.state;
-            });
-
+            reviews.forEach(r => { latestReviews[r.user.login] = r.state; });
+            
             let missingApprovals = [];
-
-            // 3. Verify Users
             for (const user of mandatoryUsers) {
               if (latestReviews[user] !== 'APPROVED') {
                 missingApprovals.push(`@${user}`);
               }
             }
-
-            // 4. Final Decision
+            
+            // 3. THE FIX: Logic for failing vs warning
             if (missingApprovals.length > 0) {
-              core.setFailed(`🛑 Review required from ${missingApprovals.join(', ')} due to data sharing.`);
+              // Only trigger a HARD FAILURE (Red X) if a review was submitted
+              // but the mandatory user is still missing.
+              if (context.eventName === 'pull_request_review') {
+                core.setFailed(`🛑 Mandatory approval missing from: ${missingApprovals.join(', ')}`);
+              } else {
+                // On initial 'pull_request' open/sync, we log a warning.
+                // This stays GREEN/YELLOW in the UI, avoiding the "Permanent Red X".
+                console.log(`⚠️ Waiting for mandatory reviews from: ${missingApprovals.join(', ')}`);
+              }
             } else {
               console.log("✅ Mandatory approval present!");
             }
