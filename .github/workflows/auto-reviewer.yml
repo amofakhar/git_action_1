@@ -63,25 +63,27 @@ jobs:
               return;
             }
 
-            // 1. Request pangan
-            await github.rest.pulls.requestReviewers({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: prNumber,
-              reviewers: [mandatoryUser]
-            });
-
-            // 2. Fetch all reviews
+            // 1. Get all reviews
             const { data: reviews } = await github.rest.pulls.listReviews({
               owner: context.repo.owner,
               repo: context.repo.repo,
               pull_number: prNumber,
             });
 
-            // 3. Find if Pangan has an APPROVED state
+            // 2. Find the LATEST approval from pangan
             const hasApproved = reviews.some(r => r.user.login === mandatoryUser && r.state === 'APPROVED');
 
+            // 3. ONLY request the reviewer if they haven't approved yet
+            // This prevents the "revoked/pending" loop
             if (!hasApproved) {
+              await github.rest.pulls.requestReviewers({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: prNumber,
+                reviewers: [mandatoryUser]
+              });
+              
+              // THE HARD GATE
               core.setFailed(`🛑 BLOCKING MERGE: @${mandatoryUser} must approve this PR because data-sharing keywords were found.`);
             } else {
               console.log(`✅ @${mandatoryUser} approved. Gate unlocked.`);
