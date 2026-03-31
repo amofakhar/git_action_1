@@ -1,7 +1,7 @@
 name: Checking for 3rd party Datasharing review
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
+    types: [opened, synchronize]
   pull_request_review:
     types: [submitted]
 
@@ -11,7 +11,6 @@ concurrency:
 
 jobs:
   check-diff:
-    name: Mandatory Data Review # This is the name that shows in the PR list
     runs-on: ubuntu-latest
     permissions:
       pull-requests: write
@@ -36,7 +35,7 @@ jobs:
             echo "match=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: Enforce Review Gates
+      - name: Verify Mandatory Reviewers
         if: always()
         uses: actions/github-script@v7
         with:
@@ -44,63 +43,69 @@ jobs:
             const isMatch = "${{ steps.scan.outputs.match }}" === "true";
             const prNumber = context.payload.pull_request.number;
             const orgName = context.repo.owner;
+            const repoName = context.repo.repo;
 
-            // --- CONFIGURATION ---
-            const mandatoryUsers = ["pangan"]; 
+            // --- CONFIGURATION: ADD YOUR LISTS HERE ---
+            const mandatoryUsers = ["pangan",]; 
             const mandatoryTeams = []; 
-            // ---------------------
+            // ------------------------------------------
 
             if (!isMatch) {
-              console.log("✅ No keywords found. Skipping mandatory review.");
+              console.log("✅ No sensitive keywords found. Extra reviews not mandatory.");
               return;
             }
 
-            // 1. Ensure reviewers are assigned
+            console.log("🔍 Keywords found. Checking for mandatory approvals...");
+
+            // 1. Request Reviewers (ensure they are on the list)
             await github.rest.pulls.requestReviewers({
               owner: orgName,
-              repo: context.repo.repo,
+              repo: repoName,
               pull_number: prNumber,
               reviewers: mandatoryUsers,
               team_reviewers: mandatoryTeams
             });
 
-            // 2. Fetch Latest Reviews
+            // 2. Fetch all reviews
             const { data: reviews } = await github.rest.pulls.listReviews({
               owner: orgName,
-              repo: context.repo.repo,
+              repo: repoName,
               pull_number: prNumber,
             });
 
-            const latestReviewState = {};
+            // Get only the LATEST review state for each user
+            const latestReviews = {};
             reviews.forEach(r => {
-              latestReviewState[r.user.login] = r.state;
+              latestReviews[r.user.login] = r.state;
             });
 
-            let missing = [];
+            let missingApprovals = [];
 
-            // 3. Check Users
+            // 3. Verify Users: Every user in the list must have 'APPROVED'
             for (const user of mandatoryUsers) {
-              if (latestReviewState[user] !== 'APPROVED') {
-                missing.push(`@${user}`);
+              if (latestReviews[user] !== 'APPROVED') {
+                missingApprovals.push(`User: @${user}`);
               }
             }
 
-            // 4. Check Teams
-            for (const team of mandatoryTeams) {
+            // 4. Verify Teams: At least one person from EACH team must have 'APPROVED'
+            for (const teamSlug of mandatoryTeams) {
               const { data: members } = await github.rest.teams.listMembersInOrg({
                 org: orgName,
-                team_slug: team,
+                team_slug: teamSlug,
               });
-              const isTeamApproved = members.some(m => latestReviewState[m.login] === 'APPROVED');
-              if (!isTeamApproved) {
-                missing.push(`Team: ${team}`);
+              
+              const memberLogins = members.map(m => m.login);
+              const teamHasApproved = memberLogins.some(login => latestReviews[login] === 'APPROVED');
+
+              if (!teamHasApproved) {
+                missingApprovals.push(`Team: ${teamSlug} (at least one member)`);
               }
             }
 
-            // 5. THE HARD GATE
-            if (missing.length > 0) {
-              // This message appears directly in the PR "Checks" area
-              core.setFailed(`Review Required: ${missing.join(' & ')} must approve because sensitive keywords were found.`);
+            // 5. Final Decision
+            if (missingApprovals.length > 0) {
+              core.setFailed(`🛑 Mandatory approvals missing from: ${missingApprovals.join(', ')}`);
             } else {
-              console.log("✅ All mandatory reviews confirmed.");
+              console.log("✅ All mandatory individual and team approvals are present!");
             }
