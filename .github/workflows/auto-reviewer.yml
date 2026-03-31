@@ -1,16 +1,17 @@
 name: Checking for 3rd party Datasharing review
 on:
   pull_request:
-    types: [opened, synchronize]
+    types: [opened, synchronize, reopened]
   pull_request_review:
     types: [submitted]
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
   check-diff:
+    name: Mandatory Data Review # This is the name that shows in the PR list
     runs-on: ubuntu-latest
     permissions:
       pull-requests: write
@@ -28,58 +29,78 @@ jobs:
         run: |
           git fetch origin ${{ github.base_ref }}
           KEYWORDS="THATSCHEMA|BRAZE|AUDITBOARD"
+          
           if git diff origin/${{ github.base_ref }}...HEAD | grep "^\+" | grep -Ei "$KEYWORDS"; then
             echo "match=true" >> $GITHUB_OUTPUT
           else
             echo "match=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: Process Mandatory Review
+      - name: Enforce Review Gates
         if: always()
         uses: actions/github-script@v7
         with:
           script: |
             const isMatch = "${{ steps.scan.outputs.match }}" === "true";
-            const prNumber = context.payload.pull_request ? context.payload.pull_request.number : context.issue.number;
+            const prNumber = context.payload.pull_request.number;
+            const orgName = context.repo.owner;
+
+            // --- CONFIGURATION ---
             const mandatoryUsers = ["pangan"]; 
-            const mandatoryTeams = []; // Add your team slugs here if needed
+            const mandatoryTeams = ["my-team-slug"]; 
+            // ---------------------
 
             if (!isMatch) {
-              console.log("No keywords found. Skipping mandatory review logic.");
+              console.log("✅ No keywords found. Skipping mandatory review.");
               return;
             }
 
-            // 1. Always ensure reviewers are assigned if keywords match
+            // 1. Ensure reviewers are assigned
             await github.rest.pulls.requestReviewers({
-              owner: context.repo.owner,
+              owner: orgName,
               repo: context.repo.repo,
               pull_number: prNumber,
               reviewers: mandatoryUsers,
               team_reviewers: mandatoryTeams
             });
 
-            // 2. Only check for approval if this is a review submission or we want to enforce the gate
+            // 2. Fetch Latest Reviews
             const { data: reviews } = await github.rest.pulls.listReviews({
-              owner: context.repo.owner,
+              owner: orgName,
               repo: context.repo.repo,
               pull_number: prNumber,
             });
 
-            const latestReviews = {};
-            reviews.forEach(r => { latestReviews[r.user.login] = r.state; });
+            const latestReviewState = {};
+            reviews.forEach(r => {
+              latestReviewState[r.user.login] = r.state;
+            });
 
-            const allApproved = mandatoryUsers.every(user => latestReviews[user] === 'APPROVED');
+            let missing = [];
 
-            // 3. LOGIC CHANGE: If it's the first run (opened), don't "Fail" yet, just stay "Pending/In Progress"
-            // If it's a review event and it's not approved, THEN fail.
-            if (!allApproved) {
-              if (context.eventName === 'pull_request_review') {
-                core.setFailed("Mandatory review from " + mandatoryUsers.join(', ') + " is still required.");
-              } else {
-                console.log("Keywords found. Waiting for mandatory reviewers to take action...");
-                // Optional: You could use core.warning() so it shows a yellow exclamation instead of a red X
-                core.warning("Review required from: " + mandatoryUsers.join(', '));
+            // 3. Check Users
+            for (const user of mandatoryUsers) {
+              if (latestReviewState[user] !== 'APPROVED') {
+                missing.push(`@${user}`);
               }
+            }
+
+            // 4. Check Teams
+            for (const team of mandatoryTeams) {
+              const { data: members } = await github.rest.teams.listMembersInOrg({
+                org: orgName,
+                team_slug: team,
+              });
+              const isTeamApproved = members.some(m => latestReviewState[m.login] === 'APPROVED');
+              if (!isTeamApproved) {
+                missing.push(`Team: ${team}`);
+              }
+            }
+
+            // 5. THE HARD GATE
+            if (missing.length > 0) {
+              // This message appears directly in the PR "Checks" area
+              core.setFailed(`Review Required: ${missing.join(' & ')} must approve because sensitive keywords were found.`);
             } else {
-              console.log("Mandatory approval confirmed!");
+              console.log("✅ All mandatory reviews confirmed.");
             }
