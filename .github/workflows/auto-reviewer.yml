@@ -11,7 +11,6 @@ concurrency:
 
 jobs:
   check-diff:
-    # THIS NAME IS WHAT YOU MUST SELECT IN SETTINGS
     name: Mandatory Data Review Gate
     runs-on: ubuntu-latest
     permissions:
@@ -23,18 +22,31 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 0 # Get all history so we have a merge base
 
       - name: Scan Diff for Keyword
         id: scan
         run: |
-          git fetch origin ${{ github.base_ref }}
-          KEYWORDS="THATSCHEMA|BRAZE|AUDITBOARD"
+          # 1. Safely get the base branch name for both PR and Review events
+          BASE_BRANCH=${{ github.event.pull_request.base.ref }}
           
-          if git diff origin/${{ github.base_ref }}...HEAD | grep "^\+" | grep -Ei "$KEYWORDS"; then
+          # 2. Fetch the base branch history
+          git fetch origin $BASE_BRANCH
+          
+          # 3. Get the specific SHAs
+          # Use the head SHA from the payload to be precise
+          HEAD_SHA=${{ github.event.pull_request.head.sha }}
+          BASE_SHA=origin/$BASE_BRANCH
+          
+          echo "Comparing $BASE_SHA to $HEAD_SHA"
+          
+          # 4. Run the diff
+          if git diff $BASE_SHA..$HEAD_SHA | grep "^\+" | grep -Ei "THATSCHEMA|BRAZE|AUDITBOARD"; then
             echo "match=true" >> $GITHUB_OUTPUT
+            echo "Keyword found."
           else
             echo "match=false" >> $GITHUB_OUTPUT
+            echo "No keywords found."
           fi
 
       - name: Verify Mandatory Reviewers
@@ -51,7 +63,7 @@ jobs:
               return;
             }
 
-            // 1. Request pangan (even if they were already requested)
+            // 1. Request pangan
             await github.rest.pulls.requestReviewers({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -59,19 +71,17 @@ jobs:
               reviewers: [mandatoryUser]
             });
 
-            // 2. Get all reviews
+            // 2. Fetch all reviews
             const { data: reviews } = await github.rest.pulls.listReviews({
               owner: context.repo.owner,
               repo: context.repo.repo,
               pull_number: prNumber,
             });
 
-            // 3. Find the LATEST approval from pangan
+            // 3. Find if Pangan has an APPROVED state
             const hasApproved = reviews.some(r => r.user.login === mandatoryUser && r.state === 'APPROVED');
 
-            // 4. THE HARD GATE
             if (!hasApproved) {
-              // This FAIL is what blocks the Merge Button
               core.setFailed(`🛑 BLOCKING MERGE: @${mandatoryUser} must approve this PR because data-sharing keywords were found.`);
             } else {
               console.log(`✅ @${mandatoryUser} approved. Gate unlocked.`);
