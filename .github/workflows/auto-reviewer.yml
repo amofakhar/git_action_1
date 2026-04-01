@@ -16,6 +16,7 @@ jobs:
     permissions:
       pull-requests: write
       contents: read
+      checks: write
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
