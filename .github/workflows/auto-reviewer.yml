@@ -56,8 +56,9 @@ jobs:
         with:
           script: |
             const isMatch = "${{ steps.scan.outputs.match }}" === "true";
-            const prNumber = context.payload.pull_request.number;
-            const headSha = context.payload.pull_request.head.sha;
+            const pr = context.payload.pull_request;
+            const prNumber = pr ? pr.number : context.issue.number;
+            const headSha = pr ? pr.head.sha : context.payload.review.commit_id;
             const mandatoryUser = "pangan";
             const checkName = "Data Sharing Security Gate"; // ONE FIXED NAME
 
