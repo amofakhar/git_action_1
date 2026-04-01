@@ -59,9 +59,13 @@ jobs:
             const pr = context.payload.pull_request;
             const prNumber = pr ? pr.number : context.issue.number;
             const headSha = pr ? pr.head.sha : context.payload.review.commit_id;
-            const mandatoryUser = "pangan";
-            const checkName = "Data Sharing Security Gate"; // ONE FIXED NAME
-
+            const checkName = "Data Sharing Security Gate";
+            
+            // --- CONFIGURATION: Add your lists here ---
+            const mandatoryUsers = ["pangan",]; 
+            const mandatoryTeams = []; // Use slugs (URL names)
+            // ------------------------------------------
+            
             if (!isMatch) {
               await github.rest.checks.create({
                 ...context.repo,
@@ -73,41 +77,64 @@ jobs:
               });
               return;
             }
-
-            // 1. Get Reviews
+            
+            // 1. Get All Reviews
             const { data: reviews } = await github.rest.pulls.listReviews({
               ...context.repo,
               pull_number: prNumber,
             });
-
-            const hasApproved = reviews.some(r => r.user.login === mandatoryUser && r.state === 'APPROVED');
-
-            // 2. Determine Status
-            const conclusion = hasApproved ? 'success' : 'failure';
-            const summary = hasApproved 
-              ? `Approved by @${mandatoryUser}` 
-              : `Waiting for @${mandatoryUser} to approve.`;
-
-            // 3. Update/Create the SINGLE check line
+            
+            // Map the latest state for every user who reviewed
+            const latestReviews = {};
+            reviews.forEach(r => { latestReviews[r.user.login] = r.state; });
+            
+            let missingApprovals = [];
+            
+            // 2. Check Individual Users (Every user must approve)
+            for (const user of mandatoryUsers) {
+              if (latestReviews[user] !== 'APPROVED') {
+                missingApprovals.push(`@${user}`);
+              }
+            }
+            
+            // 3. Check Teams (At least one member of EACH team must approve)
+            for (const teamSlug of mandatoryTeams) {
+              const { data: members } = await github.rest.teams.listMembersInOrg({
+                org: context.repo.owner,
+                team_slug: teamSlug,
+              });
+            
+              const memberLogins = members.map(m => m.login);
+              const teamHasApproved = memberLogins.some(login => latestReviews[login] === 'APPROVED');
+            
+              if (!teamHasApproved) {
+                missingApprovals.push(`Team: ${teamSlug}`);
+              }
+            }
+            
+            // 4. Update the Unified Check Gate
+            const hasPassed = missingApprovals.length === 0;
+            const conclusion = hasPassed ? 'success' : 'failure';
+            const summary = hasPassed 
+              ? "All mandatory reviews confirmed." 
+              : `Waiting for approvals from: ${missingApprovals.join(', ')}`;
+            
             await github.rest.checks.create({
               ...context.repo,
               name: checkName,
               head_sha: headSha,
               status: 'completed',
               conclusion: conclusion,
-              output: {
-                title: 'Data Sharing Review Required',
-                summary: summary
-              }
+              output: { title: 'Data Sharing Review Status', summary: summary }
             });
-
-            // 4. Request Reviewer if missing
-            if (!hasApproved) {
+            
+            // 5. Request Reviewers if missing
+            if (!hasPassed) {
               await github.rest.pulls.requestReviewers({
                 ...context.repo,
                 pull_number: prNumber,
-                reviewers: [mandatoryUser]
+                reviewers: mandatoryUsers.filter(u => latestReviews[u] !== 'APPROVED'),
+                team_reviewers: mandatoryTeams
               });
-              // We also fail the job itself to keep the UI consistent
               console.log(summary);
             }
