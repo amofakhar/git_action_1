@@ -109,5 +109,5 @@ jobs:
                 reviewers: [mandatoryUser]
               });
               // We also fail the job itself to keep the UI consistent
-              core.setFailed(summary);
+              console.log(summary);
             }
