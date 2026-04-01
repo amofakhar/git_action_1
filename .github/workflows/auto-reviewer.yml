@@ -16,6 +16,7 @@ jobs:
     permissions:
       pull-requests: write
       contents: read
+      checks: write
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
@@ -49,42 +50,63 @@ jobs:
             echo "No keywords found."
           fi
 
-      - name: Verify Mandatory Reviewers
+      - name: Update Unified Status Gate
         if: always()
         uses: actions/github-script@v7
         with:
           script: |
             const isMatch = "${{ steps.scan.outputs.match }}" === "true";
-            const prNumber = context.payload.pull_request ? context.payload.pull_request.number : context.issue.number;
+            const prNumber = context.payload.pull_request.number;
+            const headSha = context.payload.pull_request.head.sha;
             const mandatoryUser = "pangan";
+            const checkName = "Data Sharing Security Gate"; // ONE FIXED NAME
 
             if (!isMatch) {
-              console.log("✅ No keywords found. Gate passed.");
+              await github.rest.checks.create({
+                ...context.repo,
+                name: checkName,
+                head_sha: headSha,
+                status: 'completed',
+                conclusion: 'success',
+                output: { title: 'Security Gate Passed', summary: 'No keywords found.' }
+              });
               return;
             }
 
-            // 1. Get all reviews
+            // 1. Get Reviews
             const { data: reviews } = await github.rest.pulls.listReviews({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
+              ...context.repo,
               pull_number: prNumber,
             });
 
-            // 2. Find the LATEST approval from pangan
             const hasApproved = reviews.some(r => r.user.login === mandatoryUser && r.state === 'APPROVED');
 
-            // 3. ONLY request the reviewer if they haven't approved yet
-            // This prevents the "revoked/pending" loop
+            // 2. Determine Status
+            const conclusion = hasApproved ? 'success' : 'failure';
+            const summary = hasApproved 
+              ? `Approved by @${mandatoryUser}` 
+              : `Waiting for @${mandatoryUser} to approve.`;
+
+            // 3. Update/Create the SINGLE check line
+            await github.rest.checks.create({
+              ...context.repo,
+              name: checkName,
+              head_sha: headSha,
+              status: 'completed',
+              conclusion: conclusion,
+              output: {
+                title: 'Data Sharing Review Required',
+                summary: summary
+              }
+            });
+
+            // 4. Request Reviewer if missing
             if (!hasApproved) {
               await github.rest.pulls.requestReviewers({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
+                ...context.repo,
                 pull_number: prNumber,
                 reviewers: [mandatoryUser]
               });
-              
-              // THE HARD GATE
-              core.setFailed(`🛑 BLOCKING MERGE: @${mandatoryUser} must approve this PR because data-sharing keywords were found.`);
-            } else {
-              console.log(`✅ @${mandatoryUser} approved. Gate unlocked.`);
+              // We also fail the job itself to keep the UI consistent
+              core.setFailed(summary);
             }
